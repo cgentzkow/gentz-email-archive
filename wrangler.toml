@@ -1,0 +1,10 @@
+name = "gentz-email-archive"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+account_id = "acc22e776786ba3cad12441f622b57b3"
+
+
+[[d1_databases]]
+binding = "DB"
+database_name = "gentz-email-archive"
+database_id = "af96c9b3-4383-41bf-8f05-1b83faafd417"
