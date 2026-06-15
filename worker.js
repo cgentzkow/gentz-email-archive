@@ -264,6 +264,73 @@ const worker = {
       return loginPage("Incorrect password. Please try again.");
     }
 
+
+    // --- TEMP ADMIN ENDPOINTS (ingestion pipeline, remove when done) ---
+    if (path.startsWith("/admin/")) {
+      const key = request.headers.get("X-Admin-Key") || "";
+      if (key !== env.ADMIN_KEY) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+      if (path === "/admin/schema") {
+        const { results } = await env.DB.prepare("SELECT name,sql FROM sqlite_master WHERE type='table'").all();
+        return json({ tables: results });
+      }
+      if (path === "/admin/query" && request.method === "POST") {
+        const { sql, params } = await request.json();
+        const { results } = await env.DB.prepare(sql).bind(...(params||[])).all();
+        return json({ results });
+      }
+      if (path === "/admin/ingest" && request.method === "POST") {
+        const body = await request.json();
+        const emails = body.emails || [];
+        const contacts = body.contacts || [];
+        let emailsInserted = 0, contactsUpserted = 0;
+        const stmts = [];
+        for (const e of emails) {
+          stmts.push(env.DB.prepare(
+            "INSERT INTO emails (pst_file, subject, sender, sender_email, recipients, date_sent, body) VALUES (?,?,?,?,?,?,?)"
+          ).bind(e.pst_file || "", e.subject || "", e.sender || "", e.sender_email || "", e.recipients || "", e.date_sent || "", e.body || ""));
+        }
+        if (stmts.length) {
+          const results = await env.DB.batch(stmts);
+          emailsInserted = stmts.length;
+          const ftsStmts = [];
+          for (let i = 0; i < results.length; i++) {
+            const id = results[i].meta && results[i].meta.last_row_id;
+            const e = emails[i];
+            if (id) {
+              ftsStmts.push(env.DB.prepare(
+                "INSERT INTO emails_fts (rowid, subject, sender, sender_email, recipients, body) VALUES (?,?,?,?,?,?)"
+              ).bind(id, e.subject || "", e.sender || "", e.sender_email || "", e.recipients || "", e.body || ""));
+            }
+          }
+          if (ftsStmts.length) await env.DB.batch(ftsStmts);
+        }
+        const cstmts = [];
+        for (const c of contacts) {
+          if (!c.email) continue;
+          cstmts.push(env.DB.prepare(
+            `INSERT INTO contacts (email, display_name, company, domain, email_count, first_seen, last_seen)
+             VALUES (?,?,?,?,?,?,?)
+             ON CONFLICT(email) DO UPDATE SET
+               display_name = COALESCE(excluded.display_name, contacts.display_name),
+               company = COALESCE(contacts.company, excluded.company),
+               domain = COALESCE(contacts.domain, excluded.domain),
+               email_count = contacts.email_count + excluded.email_count,
+               first_seen = MIN(contacts.first_seen, excluded.first_seen),
+               last_seen = MAX(contacts.last_seen, excluded.last_seen)`
+          ).bind(c.email, c.display_name || "", c.company || "", c.domain || "", c.email_count || 1, c.first_seen || "", c.last_seen || ""));
+        }
+        if (cstmts.length) {
+          await env.DB.batch(cstmts);
+          contactsUpserted = cstmts.length;
+        }
+        return json({ emails_inserted: emailsInserted, contacts_upserted: contactsUpserted });
+      }
+      return json({ error: "Unknown admin endpoint" }, 404);
+    }
+    // --- END TEMP ADMIN ENDPOINTS ---
+
     // Auth check for all other routes
     if (!isAuthenticated(request, env)) {
       if (path === "/" || path === "") return loginPage();
