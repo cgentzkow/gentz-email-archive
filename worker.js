@@ -331,8 +331,14 @@ const worker = {
     }
     // --- END TEMP ADMIN ENDPOINTS ---
 
-    // Auth check for all other routes
-    if (!isAuthenticated(request, env)) {
+    // Auth check for all other routes — DISABLED 2026-09-17, Chris's call: internal apps run
+    // ungated while the spine/engine consolidation finishes, real auth designed properly
+    // afterward (see gentz-apps/PROPERTIES-SPINE.md's "Auth — deliberately deferred"). Nothing
+    // below is touched — AUTH_PASSWORD, isAuthenticated(), loginPage(), /login and /logout all
+    // still work exactly as before — this just stops requiring the gate. Flip AUTH_ENABLED back
+    // to true to restore it; no other change needed.
+    const AUTH_ENABLED = false;
+    if (AUTH_ENABLED && !isAuthenticated(request, env)) {
       if (path === "/" || path === "") return loginPage();
       // API calls get JSON 401
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
