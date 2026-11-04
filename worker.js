@@ -138,7 +138,7 @@ function searchUI() {
     <div class="tab" onclick="setTab('top')">Top Contacts</div>
   </div>
   <div class="search-box">
-    <input type="text" id="q" placeholder="Search by name, company, subject, keywords…" onkeydown="if(event.key==='Enter')doSearch()">
+    <input type="text" id="q" placeholder="Search by name, company, subject, keywords, or an email / @domain…" onkeydown="if(event.key==='Enter')doSearch()">
     <select id="type">
       <option value="emails">Emails</option>
       <option value="contacts">Contacts</option>
@@ -363,9 +363,33 @@ const worker = {
           ).bind(`%${q}%`, `%${q}%`, `%${q}%`, limit, offset).all();
           return json({ query: q, type: "contacts", count: results.length, results });
         }
-        const { results } = await env.DB.prepare(
-          "SELECT e.id,e.pst_file,e.subject,e.sender,e.sender_email,e.recipients,e.date_sent,substr(e.body,1,500) as body_excerpt FROM emails e JOIN emails_fts fts ON e.id=fts.rowid WHERE emails_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?"
-        ).bind(q, limit, offset).all();
+        const cols = "e.id,e.pst_file,e.subject,e.sender,e.sender_email,e.recipients,e.date_sent,substr(e.body,1,500) as body_excerpt";
+        // Plain-text scan of From / To / CC / body. Used for email addresses and
+        // domains ("@acme.com", "acme.com", "bob@acme.com"), which full-text
+        // search can't parse, and as a fallback if full-text search errors.
+        const likeSearch = async (term) => {
+          const p = `%${term}%`;
+          const { results } = await env.DB.prepare(
+            `SELECT ${cols} FROM emails e WHERE lower(e.sender_email) LIKE ? OR lower(e.sender) LIKE ? OR lower(e.recipients) LIKE ? OR lower(e.subject) LIKE ? OR lower(e.body) LIKE ? ORDER BY e.date_sent DESC LIMIT ? OFFSET ?`
+          ).bind(p, p, p, p, p, limit, offset).all();
+          return results;
+        };
+        const isAddress = q.includes("@") || /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(q);
+        if (isAddress) {
+          const results = await likeSearch(q);
+          return json({ query: q, type: "emails", mode: "address", count: results.length, results });
+        }
+        // Quote every word so punctuation (@ . - : etc.) can't break the FTS5 syntax.
+        const tokens = q.split(/\s+/).map(t => t.replace(/"/g, "")).filter(Boolean);
+        const ftsQuery = tokens.map(t => `"${t}"`).join(" ");
+        let results;
+        try {
+          ({ results } = await env.DB.prepare(
+            `SELECT ${cols} FROM emails e JOIN emails_fts fts ON e.id=fts.rowid WHERE emails_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?`
+          ).bind(ftsQuery, limit, offset).all());
+        } catch (e) {
+          results = await likeSearch(q);
+        }
         return json({ query: q, type: "emails", count: results.length, results });
       }
       if (path === "/company") {
